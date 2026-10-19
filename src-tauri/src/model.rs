@@ -117,6 +117,8 @@ pub struct Snapshot {
 #[derive(Default, Deserialize)]
 #[serde(default)]
 pub struct MessageQuery {
+    pub domain: String,
+    pub include_subdomains: bool,
     pub folder: String,
     pub identity: String,
     pub search: String,

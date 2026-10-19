@@ -42,6 +42,7 @@ An API key may expose team-wide mail. Address views are local filters, not separ
 ## Included
 
 - Three-pane mailbox; Inbox, Starred, Sent, Drafts, Outbox, Archive, Trash, All Mail, per-address and unmatched views.
+- Combine a mail folder with one sender identity or domain. Incoming mail matches To/Cc/Bcc; outgoing mail matches From. Domain matching is exact unless Include subdomains is enabled. Domain suggestions come from identities and downloaded mail; enter any domain or subdomain directly. Clear the scope with All addresses or the filter chip. Drafts and Outbox retain the scope for your return to mail folders but do not apply it.
 - Safe HTML/plain text reader with an opaque, script-free sandbox, blocked remote content, explicit external-link destinations, recipient details, and reference-based conversations among loaded messages.
 - Rich-text composition, To/Cc/Bcc, sender selection, signatures, native file attachments, Reply, Reply All, and Forward. Forwarding does not automatically include source attachments; save and attach chosen files explicitly.
 - SQLite draft autosave and revision protection; local read/star/label/folder state; Trash Undo and permanent local removal tombstones.

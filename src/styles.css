@@ -2466,3 +2466,38 @@ html[data-theme="dark"] .inline-confirm {
     opacity: 1;
   }
 }
+
+.domain-filter {
+  padding: 16px;
+  display: grid;
+  gap: 9px;
+  font-size: 12px;
+}
+.domain-filter > input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+.subdomain-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.domain-filter small {
+  opacity: 0.65;
+  line-height: 1.5;
+}
+.scope-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 20px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

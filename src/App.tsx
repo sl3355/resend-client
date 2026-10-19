@@ -91,6 +91,8 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [folder, setFolder] = useState("inbox");
   const [identity, setIdentity] = useState("");
+  const [domain, setDomain] = useState("");
+  const [includeSubdomains, setIncludeSubdomains] = useState(false);
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [offset, setOffset] = useState(0);
@@ -134,19 +136,28 @@ export default function App() {
       setSelected("");
       setDetail(null);
       setIdentity("");
+      setDomain("");
       setComposer(null);
     }
     profileRef.current = s.profile.id;
     setSnapshot(s);
     if (!["drafts", "outbox"].includes(folder)) {
       const mails = await command<Message[]>("list_messages", {
-        query: { folder, identity, search: query, limit: 100, offset },
+        query: {
+          folder,
+          identity,
+          domain,
+          include_subdomains: includeSubdomains,
+          search: query,
+          limit: 100,
+          offset,
+        },
       });
       if (generation !== loadGeneration.current) return;
       setMessages(mails);
     }
     setLoading(false);
-  }, [folder, identity, query, offset]);
+  }, [folder, identity, domain, includeSubdomains, query, offset]);
   useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -351,10 +362,9 @@ export default function App() {
   const profile = snapshot?.profile;
   const unread = snapshot?.inbox_unread || 0;
   const labels = snapshot?.labels || [];
-  const title = identity
-    ? emailAddress(identity)
-    : folders.find((f) => f.id === folder)?.label ||
-      (folder === "unmatched" ? "Unmatched addresses" : "Mail");
+  const title =
+    folders.find((f) => f.id === folder)?.label ||
+    (folder === "unmatched" ? "Unmatched addresses" : "Mail");
   const activeIntents = new Set(snapshot?.outbox.map((i) => i.draft_id) || []);
   const drafts = snapshot?.drafts.filter((d) => !activeIntents.has(d.id)) || [];
   const thread = detail
@@ -416,10 +426,9 @@ export default function App() {
             return (
               <button
                 key={id}
-                className={`nav-item ${folder === id && !identity ? "selected" : ""}`}
-                aria-current={folder === id && !identity ? "page" : undefined}
+                className={`nav-item ${folder === id ? "selected" : ""}`}
+                aria-current={folder === id ? "page" : undefined}
                 onClick={() => {
-                  setIdentity("");
                   navigate(id);
                 }}
               >
@@ -441,13 +450,28 @@ export default function App() {
           </button>
         </div>
         <nav className="identity-nav" aria-label="Addresses">
+          <button
+            className={`nav-item ${!identity && !domain ? "selected" : ""}`}
+            onClick={() => {
+              setIdentity("");
+              setDomain("");
+              navigate(folder);
+            }}
+          >
+            All addresses
+          </button>
           {identities.map((i, index) => (
             <button
               key={i.id}
               className={`nav-item identity-nav-item ${identity === i.email ? "selected" : ""}`}
               onClick={() => {
-                navigate("all");
-                setIdentity(i.email);
+                navigate(
+                  ["drafts", "outbox", "unmatched"].includes(folder)
+                    ? "all"
+                    : folder,
+                );
+                setDomain("");
+                setIdentity(identity === i.email ? "" : i.email);
               }}
               title={i.email}
             >
@@ -467,6 +491,7 @@ export default function App() {
             className={`nav-item ${folder === "unmatched" ? "selected" : ""}`}
             onClick={() => {
               setIdentity("");
+              setDomain("");
               navigate("unmatched");
             }}
           >
@@ -474,6 +499,66 @@ export default function App() {
             <span>Unmatched</span>
           </button>
         </nav>
+        {["drafts", "outbox"].includes(folder) && (identity || domain) && (
+          <p className="search-scope">
+            Address filter applies to mail folders.
+          </p>
+        )}
+        <div className="domain-filter">
+          <label htmlFor="domain-filter">DOMAIN</label>
+          <input
+            id="domain-filter"
+            aria-label="Filter by domain"
+            list="known-domains"
+            placeholder="email.sample.com"
+            value={domain}
+            onChange={(e) => {
+              setDomain(e.target.value.trim().toLowerCase());
+              setIdentity("");
+              navigate(
+                ["drafts", "outbox", "unmatched"].includes(folder)
+                  ? "all"
+                  : folder,
+              );
+            }}
+          />
+          <datalist id="known-domains">
+            {Array.from(
+              new Set(
+                [
+                  ...identities.map((i) => i.email),
+                  ...allMessages.flatMap((m) => [
+                    m.from,
+                    ...m.to,
+                    ...m.cc,
+                    ...m.bcc,
+                  ]),
+                ]
+                  .map((a) => emailAddress(a).split("@")[1]?.toLowerCase())
+                  .filter((d): d is string => !!d),
+              ),
+            )
+              .sort()
+              .map((d) => (
+                <option key={d} value={d} />
+              ))}
+          </datalist>
+          <label className="subdomain-option">
+            <input
+              type="checkbox"
+              checked={includeSubdomains}
+              onChange={(e) => {
+                setIncludeSubdomains(e.target.checked);
+                navigate(folder);
+              }}
+            />
+            Include subdomains
+          </label>
+          <small>
+            Domains from addresses and downloaded mail. You can enter a
+            subdomain.
+          </small>
+        </div>
         <div className="sidebar-heading">
           <span>LABELS</span>
           <button
@@ -498,6 +583,7 @@ export default function App() {
               onClick={() => {
                 navigate("all");
                 setIdentity("");
+                setDomain("");
                 setSearch(`label:"${l}"`);
               }}
             >
@@ -611,13 +697,32 @@ export default function App() {
                 {folder === "inbox" ? <Inbox size={21} /> : <Mail size={21} />}
               </span>
             </header>
+            {(identity || domain) && !["drafts", "outbox"].includes(folder) && (
+              <div className="scope-filter">
+                <span>
+                  {title} × {identity || domain}
+                  {domain && includeSubdomains ? " (including subdomains)" : ""}
+                </span>
+                <button
+                  className="icon-button"
+                  aria-label="Clear address filter"
+                  onClick={() => {
+                    setIdentity("");
+                    setDomain("");
+                    navigate(folder);
+                  }}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
             <div className="list-toolbar">
               <span>
                 {folder === "drafts"
                   ? `${drafts.length} saved drafts`
                   : folder === "outbox"
                     ? `${snapshot?.outbox.length || 0} pending`
-                    : search
+                    : search || identity || domain
                       ? `${messages.length}${messages.length === 100 ? "+" : ""} results`
                       : `${unread} unread`}
               </span>

@@ -78,6 +78,8 @@ export interface Snapshot {
   labels: string[];
 }
 export interface Query {
+  domain?: string;
+  include_subdomains?: boolean;
   folder: string;
   identity: string;
   search: string;

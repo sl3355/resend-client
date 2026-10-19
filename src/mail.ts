@@ -183,3 +183,27 @@ export function relatedMessages(mail: Mail, messages: Mail[]): Mail[] {
     .filter((m) => ids.has(m.id))
     .sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
+
+export function matchesAddressScope(
+  mail: Mail,
+  identity: string,
+  domain = "",
+  includeSubdomains = false,
+): boolean {
+  const addresses =
+    mail.direction === "incoming"
+      ? [...mail.to, ...mail.cc, ...mail.bcc]
+      : [mail.from];
+  return (
+    addresses.some((raw) => {
+      const key = addressKey(raw);
+      if (identity) return key === addressKey(identity);
+      const host = key.slice(key.lastIndexOf("@") + 1);
+      const target = domain.toLowerCase();
+      return (
+        host === target || (includeSubdomains && host.endsWith("." + target))
+      );
+    }) ||
+    (!identity && !domain)
+  );
+}

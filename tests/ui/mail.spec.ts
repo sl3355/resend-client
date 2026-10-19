@@ -169,3 +169,96 @@ test("an asynchronous Cancel keeps the draft intact", async ({ page }) => {
     dialog.getByRole("textbox", { name: "Message body" }),
   ).toContainText("Keep this draft.");
 });
+
+test("combines folders with identities and domain descendants", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const key = "resend-client-demo-v1";
+    const snapshot = JSON.parse(localStorage.getItem(key)!);
+    const template = snapshot.messages[0];
+    snapshot.profile.identities = [
+      { id: "scope", email: "me@email.sample.com", name: "Me", signature: "" },
+    ];
+    snapshot.messages = [
+      {
+        ...template,
+        id: "scope-in",
+        direction: "incoming",
+        folder: "inbox",
+        from: "friend@example.com",
+        to: ["me@email.sample.com"],
+        cc: [],
+        bcc: [],
+        subject: "Scope incoming",
+      },
+      {
+        ...template,
+        id: "scope-sent",
+        direction: "outgoing",
+        folder: "sent",
+        from: "Me <me@email.sample.com>",
+        to: ["friend@example.com"],
+        cc: [],
+        bcc: [],
+        subject: "Scope sent",
+      },
+      {
+        ...template,
+        id: "scope-sub",
+        direction: "outgoing",
+        folder: "sent",
+        from: "me@apac.email.sample.com",
+        to: ["friend@example.com"],
+        cc: [],
+        bcc: [],
+        subject: "Scope descendant",
+      },
+      {
+        ...template,
+        id: "scope-fake",
+        direction: "outgoing",
+        folder: "sent",
+        from: "me@fakeemail.sample.com",
+        to: ["friend@example.com"],
+        cc: [],
+        bcc: [],
+        subject: "Scope unrelated",
+      },
+    ];
+    localStorage.setItem(key, JSON.stringify(snapshot));
+  });
+  await page.reload();
+  await page
+    .getByRole("navigation", { name: "Addresses" })
+    .getByRole("button", { name: "me@email.sample.com", exact: true })
+    .click();
+  await expect(page.locator(".scope-filter")).toContainText(
+    "Inbox × me@email.sample.com",
+  );
+  await expect(page.locator(".message-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "Sent", exact: true }).click();
+  await expect(page.locator(".scope-filter")).toContainText(
+    "Sent × me@email.sample.com",
+  );
+  await expect(page.locator(".message-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "Clear address filter" }).click();
+  await expect(page.locator(".message-card")).toHaveCount(3);
+  await page
+    .getByRole("combobox", { name: "Filter by domain" })
+    .fill("email.sample.com");
+  await expect(page.locator(".message-card")).toHaveCount(1);
+  await page.getByRole("checkbox", { name: "Include subdomains" }).check();
+  await expect(page.locator(".message-card")).toHaveCount(2);
+  await page
+    .getByRole("combobox", { name: "Filter by domain" })
+    .fill("apac.email.sample.com");
+  await expect(page.locator(".message-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "Inbox", exact: true }).click();
+  await expect(page.locator(".message-card")).toHaveCount(0);
+  await page
+    .getByRole("navigation", { name: "Addresses" })
+    .getByRole("button", { name: "me@email.sample.com", exact: true })
+    .click();
+  await expect(page.locator(".message-card")).toHaveCount(1);
+});

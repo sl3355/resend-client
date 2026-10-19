@@ -178,11 +178,23 @@ impl Store {
                 args.push(folder.to_string().into());
             }
         }
-        if !q.identity.is_empty() {
-            sql.push_str(" AND (EXISTS(SELECT 1 FROM json_each(document,'$.recipient_keys') WHERE value=?) OR json_extract(document,'$.from_key')=?)");
-            let key = address_key(&q.identity);
-            args.push(key.clone().into());
-            args.push(key.into());
+        if !q.identity.is_empty() || !q.domain.is_empty() {
+            // Select the account side of the message, including Bcc in older cached documents.
+            let addresses = "SELECT json_extract(document,'$.from') AS raw WHERE direction='outgoing' UNION ALL SELECT value FROM json_each(document,'$.to') WHERE direction='incoming' UNION ALL SELECT value FROM json_each(document,'$.cc') WHERE direction='incoming' UNION ALL SELECT value FROM json_each(document,'$.bcc') WHERE direction='incoming'";
+            let parsed = format!("SELECT trim(CASE WHEN instr(raw,'<')>0 THEN substr(raw,instr(raw,'<')+1,instr(raw,'>')-instr(raw,'<')-1) ELSE raw END) AS addr FROM ({addresses})");
+            if !q.identity.is_empty() {
+                sql.push_str(&format!(" AND EXISTS(SELECT 1 FROM ({parsed}) WHERE substr(addr,1,instr(addr,'@')) || lower(substr(addr,instr(addr,'@')+1))=?)"));
+                args.push(address_key(&q.identity).into());
+            } else {
+                let domain = q.domain.trim().to_lowercase();
+                sql.push_str(&format!(" AND EXISTS(SELECT 1 FROM ({parsed}) WHERE lower(substr(addr,instr(addr,'@')+1))=?"));
+                args.push(domain.clone().into());
+                if q.include_subdomains {
+                    sql.push_str(" OR lower(substr(addr,instr(addr,'@')+1)) LIKE ? ESCAPE '\\'");
+                    args.push(format!("%.{}", like(&domain)).into());
+                }
+                sql.push(')');
+            }
         }
         for term in search_terms(&q.search) {
             let pair = term.split_once(':');
@@ -650,6 +662,44 @@ mod tests {
         };
         assert_eq!(s.list(&query("Me@example.com")).unwrap().len(), 1);
         assert!(s.list(&query("me@example.com")).unwrap().is_empty());
+    }
+    #[test]
+    fn scope_combines_folder_direction_and_domain_boundaries() {
+        let mut s = store();
+        let p = s.profile().unwrap().id;
+        let mut incoming = mail();
+        incoming.from = "me@email.sample.com".into();
+        incoming.to = vec!["other@example.com".into()];
+        incoming.bcc = vec!["Hidden <hidden@EMAIL.SAMPLE.COM>".into()];
+        s.hydrate(&p, &incoming).unwrap();
+        let mut outgoing = mail();
+        outgoing.direction = "outgoing".into();
+        outgoing.folder = "sent".into();
+        outgoing.from = "Sender <me@apac.email.sample.com>".into();
+        s.hydrate(&p, &outgoing).unwrap();
+        let mut q = MessageQuery {
+            folder: "inbox".into(),
+            identity: "hidden@email.sample.com".into(),
+            limit: 100,
+            ..Default::default()
+        };
+        assert_eq!(s.list(&q).unwrap().len(), 1);
+        q.identity = "me@email.sample.com".into();
+        assert!(s.list(&q).unwrap().is_empty());
+        q.identity.clear();
+        q.folder = "sent".into();
+        q.domain = "email.sample.com".into();
+        assert!(s.list(&q).unwrap().is_empty());
+        q.include_subdomains = true;
+        assert_eq!(s.list(&q).unwrap().len(), 1);
+        q.domain = "sample.com".into();
+        q.include_subdomains = false;
+        assert!(s.list(&q).unwrap().is_empty());
+        q.domain = "apac.email.sample.com".into();
+        assert_eq!(s.list(&q).unwrap().len(), 1);
+        q.domain = "pac.email.sample.com".into();
+        q.include_subdomains = true;
+        assert!(s.list(&q).unwrap().is_empty());
     }
     #[test]
     fn detail_hydration_keeps_known_attachments_and_thread_headers() {

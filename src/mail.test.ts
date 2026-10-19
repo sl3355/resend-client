@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { demoData } from "./demo";
 import {
   addressKey,
+  matchesAddressScope,
   relatedMessages,
   respond,
   sanitize,
@@ -101,5 +102,32 @@ describe("opaque email reader", () => {
     expect(doc).toContain("default-src 'none'");
     expect(doc).toContain("form-action 'none'");
     expect(doc).not.toContain("<script");
+  });
+});
+
+describe("address scope", () => {
+  it("matches the account side, including Cc and Bcc, and exact addresses", () => {
+    const mail = demoData().messages[0];
+    mail.direction = "incoming";
+    mail.from = "me@email.sample.com";
+    mail.to = ["other@example.com"];
+    mail.cc = ["Me <Me@EMAIL.SAMPLE.COM>"];
+    mail.bcc = ["hidden@email.sample.com"];
+    expect(matchesAddressScope(mail, "me@email.sample.com")).toBe(false);
+    expect(matchesAddressScope(mail, "Me@email.sample.com")).toBe(true);
+    expect(matchesAddressScope(mail, "hidden@email.sample.com")).toBe(true);
+    mail.direction = "outgoing";
+    expect(matchesAddressScope(mail, "hidden@email.sample.com")).toBe(false);
+    expect(matchesAddressScope(mail, "me@email.sample.com")).toBe(true);
+  });
+  it("matches domain boundaries and optional descendants", () => {
+    const mail = demoData().messages[0];
+    mail.direction = "outgoing";
+    mail.from = "Sender <me@apac.email.sample.com>";
+    expect(matchesAddressScope(mail, "", "email.sample.com")).toBe(false);
+    expect(matchesAddressScope(mail, "", "email.sample.com", true)).toBe(true);
+    expect(matchesAddressScope(mail, "", "apac.email.sample.com")).toBe(true);
+    mail.from = "me@fakeemail.sample.com";
+    expect(matchesAddressScope(mail, "", "email.sample.com", true)).toBe(false);
   });
 });

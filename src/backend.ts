@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { matchesAddressScope } from "./mail";
 import { demoData } from "./demo";
 import type { Draft, Mail, Query, Snapshot } from "./types";
 export const desktop = isTauri();
@@ -55,8 +56,7 @@ async function preview(name: string, a: Args): Promise<unknown> {
           )
             return false;
           if (
-            q.identity &&
-            ![...m.to, m.from].some((x) => x.includes(q.identity))
+            !matchesAddressScope(m, q.identity, q.domain, q.include_subdomains)
           )
             return false;
           return (q.search.match(/(?:[^\s"]+|"[^"]*")+/g) || []).every(
