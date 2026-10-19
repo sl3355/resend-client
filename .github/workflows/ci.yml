@@ -1,0 +1,66 @@
+name: Validate desktop preview
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run build
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-traces
+          path: test-results/
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: macos-15
+            target: aarch64-apple-darwin
+            bundle: app
+          - host: macos-15-intel
+            target: x86_64-apple-darwin
+            bundle: app
+          - host: windows-2022
+            target: x86_64-pc-windows-msvc
+            bundle: nsis
+          - host: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            bundle: nsis
+    runs-on: ${{ matrix.host }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install tested Rust toolchain
+        run: rustup toolchain install 1.99.1-${{ matrix.target }} --profile minimal --component rustfmt --component clippy
+      - run: rustup default 1.99.1-${{ matrix.target }}
+      - run: rustup target add ${{ matrix.target }}
+      - run: npm ci
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Build unsigned development package
+        run: npm run desktop:build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundle }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-preview-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/
+          if-no-files-found: error

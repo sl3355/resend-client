@@ -1,0 +1,11 @@
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0, connected INTEGER NOT NULL DEFAULT 0, identities TEXT NOT NULL DEFAULT '[]', settings TEXT NOT NULL DEFAULT '{}', last_sync TEXT, sync_error TEXT);
+CREATE TABLE IF NOT EXISTS messages(id TEXT NOT NULL, profile TEXT NOT NULL REFERENCES profiles(id), direction TEXT NOT NULL, provider_id TEXT NOT NULL, document TEXT NOT NULL, folder TEXT NOT NULL DEFAULT 'inbox', is_read INTEGER NOT NULL DEFAULT 0, starred INTEGER NOT NULL DEFAULT 0, labels TEXT NOT NULL DEFAULT '[]', hydrated INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, PRIMARY KEY(profile,id), UNIQUE(profile,direction,provider_id));
+CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(profile UNINDEXED, id UNINDEXED, content, tokenize='unicode61');
+CREATE TABLE IF NOT EXISTS drafts(id TEXT NOT NULL, profile TEXT NOT NULL REFERENCES profiles(id), revision INTEGER NOT NULL, document TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(profile,id));
+CREATE TABLE IF NOT EXISTS intents(id TEXT NOT NULL, profile TEXT NOT NULL REFERENCES profiles(id), draft_id TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT NOT NULL, state TEXT NOT NULL, first_attempt INTEGER, provider_id TEXT, error TEXT, next_attempt INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(profile,id), UNIQUE(profile,draft_id,revision));
+CREATE TABLE IF NOT EXISTS sync_state(profile TEXT NOT NULL, direction TEXT NOT NULL, cursor TEXT, complete INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(profile,direction));
+CREATE TABLE IF NOT EXISTS tombstones(profile TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(profile,id));
+CREATE TABLE IF NOT EXISTS files(profile TEXT NOT NULL, id TEXT NOT NULL, filename TEXT NOT NULL, content_type TEXT NOT NULL, size INTEGER NOT NULL, PRIMARY KEY(profile,id));
+PRAGMA user_version=1;
