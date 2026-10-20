@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -11,7 +11,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { command, desktop, confirmAction } from "./backend";
+import { workspaceCommand, desktop, confirmAction } from "./backend";
 import { uid } from "./mail";
 import type { Identity, Probe, Profile } from "./types";
 import { useDialogFocus } from "./useDialogFocus";
@@ -28,6 +28,9 @@ export default function Settings({
   onChange,
   notify,
 }: Props) {
+  const command = useMemo(() => workspaceCommand(profile.id), [profile.id]);
+  const [workspaceName, setWorkspaceName] = useState(profile.name);
+  const [sameAccount, setSameAccount] = useState(false);
   const [tab, setTab] = useState(
     profile.connected ? "identities" : "connection",
   );
@@ -55,12 +58,14 @@ export default function Settings({
     }
   }
   async function save() {
+    await command("rename_workspace", { name: workspaceName });
     await command("save_settings", { identities, settings: { theme } });
     setDirty(false);
     await onChange();
     notify("Settings saved on this device.");
   }
   async function close() {
+    if (busy) return;
     if (dirty) {
       await action(async () => {
         await save();
@@ -135,7 +140,19 @@ export default function Settings({
           <div className="settings-content">
             {tab === "connection" && (
               <>
-                <h3>Your Resend account</h3>
+                <h3>Workspace connection</h3>
+                <label className="stacked-label">
+                  Workspace name
+                  <input
+                    value={workspaceName}
+                    maxLength={60}
+                    onChange={(e) => {
+                      setWorkspaceName(e.target.value);
+                      setDirty(true);
+                    }}
+                    disabled={busy}
+                  />
+                </label>
                 <p className="muted">
                   Connect the account you already use. Your domains and DNS stay
                   managed in Resend.
@@ -167,57 +184,70 @@ export default function Settings({
                       </p>
                     </div>
                   </div>
-                ) : (
-                  <>
-                    <label className="stacked-label">
-                      Resend API key
-                      <div className="key-input">
-                        <KeyRound size={16} />
-                        <input
-                          type="password"
-                          autoComplete="off"
-                          spellCheck={false}
-                          placeholder="re_••••••••••••••••"
-                          value={key}
-                          onChange={(e) => setKey(e.target.value)}
-                          disabled={!desktop}
-                        />
-                      </div>
-                    </label>
-                    <p className="form-help">
-                      The key is saved to OS secure storage only after both read
-                      checks pass. No test message is sent automatically.
-                    </p>
-                    <button
-                      className="primary-button"
-                      disabled={busy || !key || !desktop}
-                      onClick={() =>
-                        void action(async () => {
-                          const result = await command<Probe>(
-                            "connect_account",
-                            { credential: key },
+                ) : null}
+                <>
+                  <label className="stacked-label">
+                    {profile.connected ? "Replace API key" : "Resend API key"}
+                    <div className="key-input">
+                      <KeyRound size={16} />
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder="re_••••••••••••••••"
+                        value={key}
+                        onChange={(e) => setKey(e.target.value)}
+                        disabled={!desktop}
+                      />
+                    </div>
+                  </label>
+                  <p className="form-help">
+                    The key is saved to OS secure storage only after both read
+                    checks pass. No test message is sent automatically.
+                  </p>
+                  <label className="account-confirmation">
+                    <input
+                      type="checkbox"
+                      checked={sameAccount}
+                      onChange={(e) => setSameAccount(e.target.checked)}
+                      disabled={busy || !desktop}
+                    />
+                    This key belongs to this workspace’s Resend account. For
+                    another account, add a workspace. Replacing a key keeps
+                    local mail and pauses previously attempted sends for review.
+                  </label>
+                  <button
+                    className="primary-button"
+                    disabled={busy || !key || !desktop || !sameAccount}
+                    onClick={() =>
+                      void action(async () => {
+                        const result = await command<Probe>("connect_account", {
+                          credential: key,
+                          sameAccount,
+                        });
+                        setKey("");
+                        setSameAccount(false);
+                        setProbe(result);
+                        if (result.incoming && result.outgoing) {
+                          await onChange();
+                          notify(
+                            "Connected. Add your sender identities, then refresh mail.",
                           );
-                          setKey("");
-                          setProbe(result);
-                          if (result.incoming && result.outgoing) {
-                            await onChange();
-                            notify(
-                              "Connected. Add your sender identities, then refresh mail.",
-                            );
-                            setTab("identities");
-                          }
-                        })
-                      }
-                    >
-                      {busy ? (
-                        <Loader2 className="spin" size={16} />
-                      ) : (
-                        <ShieldCheck size={16} />
-                      )}{" "}
-                      Verify & connect
-                    </button>
-                  </>
-                )}
+                          setTab("identities");
+                        }
+                      })
+                    }
+                  >
+                    {busy ? (
+                      <Loader2 className="spin" size={16} />
+                    ) : (
+                      <ShieldCheck size={16} />
+                    )}{" "}
+                    {profile.connected
+                      ? "Verify & replace key"
+                      : "Verify & connect"}
+                  </button>
+                </>
                 {probe && (
                   <div className="probe-results">
                     <p>
@@ -242,7 +272,7 @@ export default function Settings({
                     onClick={async () => {
                       if (
                         await confirmAction(
-                          "Disconnect and start a fresh profile? Export a backup first. Existing local data is retained in the app storage, and provider mail is unaffected.",
+                          "Disconnect this workspace? Its API key will be removed from OS secure storage. Local mail and drafts remain available. Pending sends pause until you reconnect to the same Resend account.",
                         )
                       )
                         void action(async () => {
@@ -252,7 +282,7 @@ export default function Settings({
                         });
                     }}
                   >
-                    Disconnect & start fresh
+                    Disconnect workspace
                   </button>
                 )}
               </>

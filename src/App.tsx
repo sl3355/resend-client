@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   lazy,
@@ -44,7 +45,12 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { command, desktop, confirmAction } from "./backend";
+import {
+  command as invokeCommand,
+  workspaceCommand,
+  desktop,
+  confirmAction,
+} from "./backend";
 import {
   blankDraft,
   emailAddress,
@@ -55,7 +61,8 @@ import {
   relatedMessages,
   respond,
 } from "./mail";
-import type { Draft, Mail as Message, Snapshot } from "./types";
+import type { Draft, Mail as Message, Snapshot, Workspace } from "./types";
+import type { ComposerHandle } from "./Composer";
 const Composer = lazy(() => import("./Composer"));
 const Settings = lazy(() => import("./Settings"));
 
@@ -87,7 +94,56 @@ const colorFor = (s: string) =>
   ];
 
 export default function App() {
+  const [view, setView] = useState({ key: 0, setup: false });
+  const change = useCallback(
+    (setup = false) => setView((v) => ({ key: v.key + 1, setup })),
+    [],
+  );
+  return (
+    <WorkspaceView
+      key={view.key}
+      setup={view.setup}
+      onWorkspaceChange={change}
+    />
+  );
+}
+function WorkspaceView({
+  setup,
+  onWorkspaceChange,
+}: {
+  setup: boolean;
+  onWorkspaceChange: (setup?: boolean) => void;
+}) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const command = useMemo(
+    () => workspaceCommand(snapshot?.profile.id),
+    [snapshot?.profile.id],
+  );
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspaceMenu, setWorkspaceMenu] = useState(false);
+  const workspaceControl = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!workspaceMenu) return;
+    const close = (e: PointerEvent) => {
+      if (!workspaceControl.current?.contains(e.target as Node))
+        setWorkspaceMenu(false);
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [workspaceMenu]);
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [switching, setSwitching] = useState(false);
+  const switchingRef = useRef(false);
+  const composerRef = useRef<ComposerHandle>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      loadGeneration.current++;
+      requestRef.current++;
+    };
+  }, []);
   const [messages, setMessages] = useState<Message[]>([]);
   const [folder, setFolder] = useState("inbox");
   const [identity, setIdentity] = useState("");
@@ -102,7 +158,7 @@ export default function App() {
   const [reading, setReading] = useState(false);
   const [readerError, setReaderError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const [settings, setSettings] = useState(false);
+  const [settings, setSettings] = useState(setup);
   const [composer, setComposer] = useState<Draft | null>(null);
   const [toast, setToast] = useState<{
     text: string;
@@ -129,35 +185,47 @@ export default function App() {
   const theme = snapshot?.profile.settings.theme || "system";
   const dark = theme === "dark" || (theme === "system" && systemDark);
   const reload = useCallback(async () => {
+    if (!mounted.current || switchingRef.current) return;
     const generation = ++loadGeneration.current;
-    const s = await command<Snapshot>("get_snapshot");
-    if (generation !== loadGeneration.current) return;
+    const s = await invokeCommand<Snapshot>("get_snapshot");
+    if (!mounted.current || generation !== loadGeneration.current) return;
     if (profileRef.current && profileRef.current !== s.profile.id) {
-      setSelected("");
-      setDetail(null);
-      setIdentity("");
-      setDomain("");
-      setComposer(null);
+      onWorkspaceChange();
+      return;
     }
+    const spaces = await invokeCommand<Workspace[]>("list_workspaces");
+    if (!mounted.current || generation !== loadGeneration.current) return;
+    setWorkspaces(spaces);
     profileRef.current = s.profile.id;
     setSnapshot(s);
     if (!["drafts", "outbox"].includes(folder)) {
-      const mails = await command<Message[]>("list_messages", {
-        query: {
-          folder,
-          identity,
-          domain,
-          include_subdomains: includeSubdomains,
-          search: query,
-          limit: 100,
-          offset,
+      const mails = await workspaceCommand(s.profile.id)<Message[]>(
+        "list_messages",
+        {
+          query: {
+            folder,
+            identity,
+            domain,
+            include_subdomains: includeSubdomains,
+            search: query,
+            limit: 100,
+            offset,
+          },
         },
-      });
+      );
       if (generation !== loadGeneration.current) return;
       setMessages(mails);
     }
     setLoading(false);
-  }, [folder, identity, domain, includeSubdomains, query, offset]);
+  }, [
+    folder,
+    identity,
+    domain,
+    includeSubdomains,
+    query,
+    offset,
+    onWorkspaceChange,
+  ]);
   useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -216,6 +284,25 @@ export default function App() {
       openMessage(messages[0]);
     }
   }, [messages]);
+  async function changeWorkspace(id?: string) {
+    if (switchingRef.current || !snapshot || id === snapshot.profile.id) return;
+    switchingRef.current = true;
+    setSwitching(true);
+    try {
+      await composerRef.current?.flush();
+      loadGeneration.current++;
+      requestRef.current++;
+      if (id) await command("switch_workspace", { id });
+      else await command("create_workspace", { name: workspaceName });
+      onWorkspaceChange(!id);
+    } catch (e) {
+      notify(String(e), true);
+      switchingRef.current = false;
+      setSwitching(false);
+      setReading(false);
+      void reload().catch(() => {});
+    }
+  }
   async function openMessage(m: Message) {
     const request = ++requestRef.current;
     selectedRef.current = m.id;
@@ -275,6 +362,7 @@ export default function App() {
   }
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (switchingRef.current) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         if (!composer && !settings) searchRef.current?.focus();
@@ -301,6 +389,7 @@ export default function App() {
         }
       }
       if (e.key === "Escape") {
+        setWorkspaceMenu(false);
         setSelected("");
         setDetail(null);
       }
@@ -380,7 +469,10 @@ export default function App() {
     requestRef.current++;
   };
   return (
-    <div className={`app-shell ${selected ? "reader-visible" : ""}`}>
+    <div
+      className={`app-shell ${selected ? "reader-visible" : ""}`}
+      inert={switching}
+    >
       <aside className="sidebar" aria-label="Mail navigation">
         <div className="brand">
           <svg viewBox="0 0 34 34" aria-hidden="true">
@@ -394,20 +486,94 @@ export default function App() {
             <small>mail</small>
           </span>
         </div>
-        <button
-          className="workspace-switch"
-          onClick={() => setSettings(true)}
-          aria-label="Open workspace settings"
-        >
-          <span className="workspace-icon">
-            {initials(identities[0]?.name || "Your workspace")}
-          </span>
-          <span>
-            <strong>{identities[0]?.name || "Your workspace"}</strong>
-            <small>{desktop ? "Personal workspace" : "Demo workspace"}</small>
-          </span>
-          <ChevronDown size={15} />
-        </button>
+        <div className="workspace-control" ref={workspaceControl}>
+          <button
+            className="workspace-switch"
+            onClick={() => setWorkspaceMenu(!workspaceMenu)}
+            aria-label="Switch workspace"
+            aria-expanded={workspaceMenu}
+            disabled={!profile || switching}
+          >
+            <span className="workspace-icon">
+              {initials(profile?.name || "Your workspace")}
+            </span>
+            <span>
+              <strong>{profile?.name || "Your workspace"}</strong>
+              <small>
+                {desktop
+                  ? profile?.connected
+                    ? "Connected"
+                    : "Disconnected"
+                  : "Browser demo"}
+              </small>
+            </span>
+            <ChevronDown size={15} />
+          </button>
+          {workspaceMenu && (
+            <div
+              className="workspace-menu"
+              role="region"
+              aria-label="Workspace management"
+            >
+              <label className="stacked-label">
+                Workspace
+                <select
+                  aria-label="Workspace"
+                  value={profile?.id || ""}
+                  disabled={switching}
+                  onChange={(e) => void changeWorkspace(e.target.value)}
+                >
+                  {workspaces.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                      {w.pending_sends ? ` · ${w.pending_sends} in Outbox` : ""}
+                      {!w.connected ? " · Disconnected" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p>
+                Only the current workspace refreshes and processes queued mail.
+                In-flight sends finish in their original workspace.
+              </p>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void changeWorkspace();
+                }}
+              >
+                <label className="stacked-label">
+                  New workspace name
+                  <input
+                    value={workspaceName}
+                    maxLength={60}
+                    onChange={(e) => setWorkspaceName(e.target.value)}
+                    disabled={switching}
+                    placeholder="e.g. Studio"
+                    required
+                  />
+                </label>
+                <button
+                  className="secondary-button"
+                  disabled={switching || !workspaceName.trim()}
+                >
+                  <Plus size={14} /> Add workspace
+                </button>
+              </form>
+              <button
+                className="text-button"
+                aria-label="Open workspace settings"
+                disabled={switching}
+                onClick={() => {
+                  setWorkspaceMenu(false);
+                  setSettings(true);
+                }}
+              >
+                Workspace settings
+              </button>
+            </div>
+          )}
+        </div>
         <button className="compose-button" onClick={() => compose()}>
           <PenLine size={17} />
           <span>New message</span>
@@ -612,7 +778,8 @@ export default function App() {
       <main className="workspace">
         <header className="topbar">
           <div className="breadcrumb">
-            Your workspace <ChevronRight size={13} /> <strong>{title}</strong>
+            {profile?.name || "Your workspace"} <ChevronRight size={13} />{" "}
+            <strong>{title}</strong>
           </div>
           <div className="search-box">
             <Search size={16} />
@@ -1479,6 +1646,8 @@ export default function App() {
         {composer && (
           <Composer
             key={composer.id}
+            ref={composerRef}
+            workspaceId={profile!.id}
             initial={composer}
             identities={identities}
             onClose={() => setComposer(null)}

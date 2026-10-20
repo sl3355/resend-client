@@ -97,10 +97,18 @@ pub struct Intent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Profile {
     pub id: String,
+    pub name: String,
     pub connected: bool,
     pub identities: Vec<Identity>,
     pub settings: Value,
     pub last_sync: Option<String>,
+}
+#[derive(Debug, Serialize)]
+pub struct Workspace {
+    pub id: String,
+    pub name: String,
+    pub connected: bool,
+    pub pending_sends: i64,
 }
 #[derive(Serialize)]
 pub struct Snapshot {

@@ -35,7 +35,8 @@ The first release promises familiar personal email workflows. It does not promis
 | P11 | Must | Keyboard navigation, screen-reader labels, zoom, high-contrast testing, light/dark mode, and native file dialogs. |
 | P12 | Must | Signed release packages for all four targets, safe updates, and export/backup of local data. |
 | P13 | Should | Tray/menu-bar operation, configurable notifications, address autocomplete from local correspondence, and mailto handling. |
-| P14 | Later | Multiple Resend accounts, synced organization, advanced rules, scheduled sending, managed shared inboxes, and optional cloud relay. |
+| P14 | Later | Synced organization, advanced rules, scheduled sending, managed shared inboxes, and optional cloud relay. |
+| P15 | Must | Multiple named local workspaces, one API key per workspace, isolated local mail/drafts/Outbox/identities, explicit key replacement, and last-active restoration. Only the selected workspace syncs/sends; in-flight sends retain their original workspace. |
 
 Excluded from the first release: arbitrary IMAP/POP accounts, calendar, tasks, marketing campaigns, bulk mail, contact-list marketing management, shared-user permissions, mobile/web clients, end-to-end encrypted mail, and an always-on background service. A personal address book must not automatically subscribe people to Resend marketing contacts.
 

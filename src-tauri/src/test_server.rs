@@ -12,6 +12,12 @@ pub struct Reply {
 pub fn serve(
     replies: Vec<Reply>,
 ) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
+    serve_with(replies, || {})
+}
+pub fn serve_with(
+    replies: Vec<Reply>,
+    mut before_response: impl FnMut() + Send + 'static,
+) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let captured = Arc::new(Mutex::new(vec![]));
@@ -48,6 +54,7 @@ pub fn serve(
             copy.lock()
                 .unwrap()
                 .push(String::from_utf8_lossy(&bytes).into_owned());
+            before_response();
             if reply.status == 0 {
                 continue;
             }

@@ -2501,3 +2501,80 @@ html[data-theme="dark"] .inline-confirm {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+.workspace-control {
+  position: relative;
+  flex-shrink: 0;
+}
+.workspace-menu {
+  position: absolute;
+  top: 60px;
+  left: 0;
+  width: 100%;
+  z-index: 20;
+  box-shadow: 0 8px 30px #0002;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sidebar);
+}
+.workspace-menu select,
+.workspace-menu input {
+  width: 100%;
+  min-width: 0;
+}
+.workspace-menu select {
+  font: inherit;
+  font-size: 12px;
+  padding: 9px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--panel);
+}
+.workspace-menu p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.workspace-menu form {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.account-confirmation {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 16px 0;
+}
+.account-confirmation input {
+  width: auto;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+@media (max-width: 650px) {
+  .domain-filter {
+    display: none;
+  }
+  .workspace-switch {
+    display: flex;
+    padding: 7px;
+    justify-content: center;
+  }
+  .workspace-switch > span:nth-child(2),
+  .workspace-switch > svg {
+    display: none;
+  }
+  .workspace-menu {
+    position: absolute;
+    top: 0;
+    left: 48px;
+    width: min(280px, calc(100vw - 80px));
+    z-index: 20;
+    box-shadow: 0 8px 30px #0002;
+  }
+}

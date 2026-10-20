@@ -37,7 +37,19 @@ Open `http://127.0.0.1:1420`. Browser demo state uses localStorage and is separa
 3. Refresh. The app imports recent incoming/outgoing metadata first and continues available history with saved cursors. Bodies download in bounded background batches; selecting an uncached message downloads it immediately.
 4. Explicitly compose a message to a test recipient you control and reply to it. No test message is sent automatically. History access does not independently prove send permission or domain verification.
 
-An API key may expose team-wide mail. Address views are local filters, not separate authenticated mailboxes. This version supports one active personal account. Changing credentials starts a separate profile; export before disconnecting. Old profiles remain in private app storage. Restoring a backup opens another disconnected profile; reconnect it only to its original Resend account.
+An API key may expose team-wide mail. Address views and local workspaces are not provider authorization boundaries: different keys from the same team may show the same mail.
+
+### Multiple workspaces
+
+Click the workspace name at the top of the sidebar to switch or add a workspace. Give each workspace a name, then connect its dedicated API key in Settings → Connection. The name and key can also be updated there. Keys stay in the OS credential store, one per workspace; they are never included in backups or returned to the frontend.
+
+Each workspace keeps separate mail, sender identities/signatures, drafts, Outbox, labels, search index, synchronization cursors, attachments, and appearance. Restarting opens the last selected workspace. Existing profiles migrate automatically without changing their IDs or credential references; previously retained profiles are available in the switcher.
+
+Only the selected workspace refreshes and processes queued sends. Switching pauses further work for other workspaces; an already submitted send completes and records its outcome in its original workspace. The switcher shows outstanding Outbox counts. Save and close a composer before switching through the sidebar; draft saves and all other scoped commands reject stale workspace IDs.
+
+Replace a key only with another key for the **same Resend account/team**. The app requires explicit account confirmation but cannot independently attest team identity. A failed permission probe leaves the existing key untouched. Previously attempted sends pause for review when a key is replaced. Use a new workspace for another account.
+
+Disconnect removes only that workspace’s saved credential and pauses queued sends; cached mail and drafts remain accessible. Restoring a backup opens another disconnected workspace and pauses restored sends for review; reconnect it only to its original account.
 
 ## Included
 

@@ -42,17 +42,46 @@ pub fn get_snapshot(state: State<AppState>) -> Result<Snapshot> {
     state.db()?.snapshot()
 }
 #[tauri::command]
-pub fn list_messages(state: State<AppState>, query: MessageQuery) -> Result<Vec<Message>> {
-    state.db()?.list(&query)
+pub fn list_workspaces(state: State<AppState>) -> Result<Vec<Workspace>> {
+    state.db()?.workspaces()
 }
 #[tauri::command]
-pub async fn connect_account(state: State<'_, AppState>, credential: String) -> Result<Probe> {
+pub fn create_workspace(
+    state: State<AppState>,
+    workspace_id: String,
+    name: String,
+) -> Result<String> {
+    state.workspace_db(&workspace_id)?.new_workspace(&name)
+}
+#[tauri::command]
+pub fn switch_workspace(state: State<AppState>, workspace_id: String, id: String) -> Result<()> {
+    state.workspace_db(&workspace_id)?.switch_workspace(&id)
+}
+#[tauri::command]
+pub fn rename_workspace(state: State<AppState>, workspace_id: String, name: String) -> Result<()> {
+    state
+        .workspace_db(&workspace_id)?
+        .rename_workspace(&workspace_id, &name)
+}
+#[tauri::command]
+pub fn list_messages(
+    state: State<AppState>,
+    workspace_id: String,
+    query: MessageQuery,
+) -> Result<Vec<Message>> {
+    state.workspace_db(&workspace_id)?.list(&query)
+}
+#[tauri::command]
+pub async fn connect_account(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    credential: String,
+    same_account: bool,
+) -> Result<Probe> {
     let _job = state.jobs.lock().await;
-    let p = state.db()?.profile()?;
-    if p.connected {
-        return Err(
-            "Disconnect and create a separate profile before connecting another credential.".into(),
-        );
+    let p = state.workspace_db(&workspace_id)?.profile()?;
+    if !same_account {
+        return Err("Confirm this key belongs to this workspace's original Resend account. Use a new workspace for another account.".into());
     }
     let credential = credential.trim();
     if !credential.starts_with("re_")
@@ -73,19 +102,23 @@ pub async fn connect_account(state: State<'_, AppState>, credential: String) -> 
         outgoing_error: outgoing.err(),
     };
     if probe.incoming && probe.outgoing {
+        let db = state.workspace_db(&workspace_id)?;
+        db.db.execute("UPDATE intents SET state='needs_review',error='The API key changed. Review this previous attempt before retrying.' WHERE profile=?1 AND first_attempt IS NOT NULL AND state NOT IN('accepted','cancelled')",[&p.id]).map_err(|_| "Could not pause previous attempts.")?;
         keyring::Entry::new("com.resendclient.desktop",&p.id).and_then(|e|e.set_password(credential)).map_err(|_|"Secure storage is unavailable. Unlock your OS credential store and try again. The key was not saved to a file.")?;
-        state
-            .db()?
-            .db
-            .execute("UPDATE profiles SET connected=1 WHERE id=?1", [p.id])
+        db.db
+            .execute(
+                "UPDATE profiles SET connected=1,sync_error=NULL WHERE id=?1",
+                [p.id],
+            )
             .map_err(|_| "Could not save connection.")?;
     }
     Ok(probe)
 }
 #[tauri::command]
-pub async fn disconnect_account(state: State<'_, AppState>) -> Result<()> {
+pub async fn disconnect_account(state: State<'_, AppState>, workspace_id: String) -> Result<()> {
     let _job = state.jobs.lock().await;
-    let p = state.db()?.profile()?;
+    let db = state.workspace_db(&workspace_id)?;
+    let p = db.profile()?;
     if p.connected {
         let entry = keyring::Entry::new("com.resendclient.desktop", &p.id)
             .map_err(|_| "Secure storage is unavailable.")?;
@@ -98,16 +131,15 @@ pub async fn disconnect_account(state: State<'_, AppState>) -> Result<()> {
             }
         }
     }
-    let mut db = state.db()?;
     db.db
         .execute("UPDATE profiles SET connected=0 WHERE id=?1", [&p.id])
         .map_err(|_| "Could not disconnect.")?;
-    db.new_profile()?;
     Ok(())
 }
 #[tauri::command]
 pub fn save_settings(
     state: State<AppState>,
+    workspace_id: String,
     identities: Vec<Identity>,
     settings: Value,
 ) -> Result<()> {
@@ -117,17 +149,22 @@ pub fn save_settings(
         return Err("Invalid appearance setting.".into());
     }
     state
-        .db()?
+        .workspace_db(&workspace_id)?
         .update_profile(&identities, &json!({"theme":theme}))
 }
 #[tauri::command]
-pub async fn refresh_connection(state: State<'_, AppState>) -> Result<()> {
-    sync(&state).await
+pub async fn refresh_connection(state: State<'_, AppState>, workspace_id: String) -> Result<()> {
+    let _job = state.jobs.lock().await;
+    let p = state.workspace_db(&workspace_id)?.profile()?;
+    sync_current(&state, p).await
 }
 
 pub async fn sync(state: &AppState) -> Result<()> {
     let _job = state.jobs.lock().await;
     let p = state.db()?.profile()?;
+    sync_current(state, p).await
+}
+async fn sync_current(state: &AppState, p: Profile) -> Result<()> {
     if !p.connected {
         return Ok(());
     }
@@ -135,9 +172,12 @@ pub async fn sync(state: &AppState) -> Result<()> {
         Ok(key) => sync_profile(state, &p, &key).await,
         Err(error) => Err(error),
     };
-    state
-        .db()?
-        .db
+    let db = state.db()?;
+    // Switching is an expected pause, not a synchronization failure.
+    if db.profile()?.id != p.id {
+        return Ok(());
+    }
+    db.db
         .execute(
             "UPDATE profiles SET sync_error=?1 WHERE id=?2",
             params![result.as_ref().err(), p.id],
@@ -148,6 +188,7 @@ pub async fn sync(state: &AppState) -> Result<()> {
 async fn sync_profile(state: &AppState, p: &Profile, key: &str) -> Result<()> {
     let mut completed = 0;
     for direction in ["incoming", "outgoing"] {
+        state.db()?.require_active(&p.id)?;
         let base = if direction == "incoming" {
             "/emails/receiving"
         } else {
@@ -205,6 +246,7 @@ async fn sync_profile(state: &AppState, p: &Profile, key: &str) -> Result<()> {
                 break;
             };
             valid_id(&next)?;
+            state.db()?.require_active(&p.id)?;
             page = match state
                 .provider
                 .get(key, &format!("{base}?limit=100&after={next}"))
@@ -248,6 +290,7 @@ async fn sync_profile(state: &AppState, p: &Profile, key: &str) -> Result<()> {
             .map_err(|_| "Could not load download queue.")?
     };
     for (id, direction) in pending {
+        state.db()?.require_active(&p.id)?;
         let path = if direction == "incoming" {
             format!("/emails/receiving/{id}?html_format=cid")
         } else {
@@ -269,6 +312,7 @@ async fn sync_profile(state: &AppState, p: &Profile, key: &str) -> Result<()> {
             .map_err(|_| "Could not inspect delivery status.")?
     };
     for id in recent {
+        state.db()?.require_active(&p.id)?;
         if let Ok(v) = state.provider.get(key, &format!("/emails/{id}")).await {
             if let Ok(m) = provider_message(v, "outgoing", true) {
                 state.db()?.hydrate(&p.id, &m)?;
@@ -278,8 +322,12 @@ async fn sync_profile(state: &AppState, p: &Profile, key: &str) -> Result<()> {
     Ok(())
 }
 #[tauri::command]
-pub async fn read_message(state: State<'_, AppState>, id: String) -> Result<Message> {
-    let p = state.db()?.profile()?;
+pub async fn read_message(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    id: String,
+) -> Result<Message> {
+    let p = state.workspace_db(&workspace_id)?.profile()?;
     let mut m = state.db()?.message(&p.id, &id)?;
     if p.connected && (!m.hydrated || m.direction == "outgoing") {
         let key = state.secret(&p.id)?;
@@ -301,11 +349,11 @@ pub async fn read_message(state: State<'_, AppState>, id: String) -> Result<Mess
         return Err("This body is not downloaded. Reconnect to download it.".into());
     }
     // Never return another profile's data if connection setup changed during the request.
-    if state.db()?.profile()?.id != p.id {
-        return Err("The active profile changed.".into());
+    {
+        let mut db = state.workspace_db(&workspace_id)?;
+        db.flags(&id, None, Some(true), None, None)?;
+        m = db.message(&p.id, &id)?;
     }
-    state.db()?.flags(&id, None, Some(true), None, None)?;
-    m = state.db()?.message(&p.id, &id)?;
     for a in &mut m.attachments {
         a.cached = state
             .file_path(&p.id, &a.id)
@@ -315,16 +363,17 @@ pub async fn read_message(state: State<'_, AppState>, id: String) -> Result<Mess
     Ok(m)
 }
 #[tauri::command]
-pub fn save_draft(state: State<AppState>, draft: Draft) -> Result<()> {
-    state.db()?.save_draft(&draft)
+pub fn save_draft(state: State<AppState>, workspace_id: String, draft: Draft) -> Result<()> {
+    state.workspace_db(&workspace_id)?.save_draft(&draft)
 }
 #[tauri::command]
-pub fn delete_draft(state: State<AppState>, id: String) -> Result<()> {
-    state.db()?.delete_draft(&id)
+pub fn delete_draft(state: State<AppState>, workspace_id: String, id: String) -> Result<()> {
+    state.workspace_db(&workspace_id)?.delete_draft(&id)
 }
 #[tauri::command]
-pub fn enqueue_send(state: State<AppState>, draft: Draft) -> Result<String> {
-    let p = state.db()?.profile()?;
+pub fn enqueue_send(state: State<AppState>, workspace_id: String, draft: Draft) -> Result<String> {
+    let mut db = state.workspace_db(&workspace_id)?;
+    let p = db.profile()?;
     if !p.connected {
         return Err("Connect your account before queueing mail.".into());
     }
@@ -333,8 +382,7 @@ pub fn enqueue_send(state: State<AppState>, draft: Draft) -> Result<String> {
     let mut encoded_size = payload.to_string().len();
     for a in &draft.attachments {
         valid_id(&a.id)?;
-        let known: bool = state
-            .db()?
+        let known: bool = db
             .db
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM files WHERE profile=?1 AND id=?2)",
@@ -357,7 +405,7 @@ pub fn enqueue_send(state: State<AppState>, draft: Draft) -> Result<String> {
             .push(json!({"filename":safe_filename(&a.filename),"content":STANDARD.encode(bytes)}));
     }
     payload["attachments"] = json!(attachments);
-    state.db()?.enqueue(&draft, &payload)
+    db.enqueue(&draft, &payload)
 }
 pub async fn process_outbox(state: &AppState) -> Result<()> {
     let _job = state.jobs.lock().await;
@@ -388,7 +436,13 @@ async fn submit_next(state: &AppState, p: &Profile, key: &str) -> Result<()> {
     }
     let payload: Value =
         serde_json::from_str(&raw).map_err(|_| "Stored send payload is invalid.")?;
-    let claimed=state.db()?.db.execute("UPDATE intents SET state='submitting',first_attempt=COALESCE(first_attempt,?1),error=NULL WHERE profile=?2 AND id=?3 AND state IN('queued','unknown')",params![timestamp,p.id,id]).map_err(|_|"Could not commit send attempt. Nothing was submitted.")?;
+    let claimed = {
+        let db = state.db()?;
+        if db.profile()?.id != p.id {
+            return Ok(());
+        }
+        db.db.execute("UPDATE intents SET state='submitting',first_attempt=COALESCE(first_attempt,?1),error=NULL WHERE profile=?2 AND id=?3 AND state IN('queued','unknown')",params![timestamp,p.id,id]).map_err(|_|"Could not commit send attempt. Nothing was submitted.")?
+    };
     if claimed == 0 {
         return Ok(());
     }
@@ -450,8 +504,8 @@ async fn submit_next(state: &AppState, p: &Profile, key: &str) -> Result<()> {
     Ok(())
 }
 #[tauri::command]
-pub fn cancel_intent(state: State<AppState>, id: String) -> Result<()> {
-    let db = state.db()?;
+pub fn cancel_intent(state: State<AppState>, workspace_id: String, id: String) -> Result<()> {
+    let db = state.workspace_db(&workspace_id)?;
     let p = db.profile()?.id;
     let changed=db.db.execute("UPDATE intents SET state='cancelled' WHERE profile=?1 AND id=?2 AND state IN('queued','failed') AND first_attempt IS NULL",params![p,id]).map_err(|_|"Could not cancel queued mail.")?;
     if changed == 0 {
@@ -462,8 +516,8 @@ pub fn cancel_intent(state: State<AppState>, id: String) -> Result<()> {
     Ok(())
 }
 #[tauri::command]
-pub fn retry_intent(state: State<AppState>, id: String) -> Result<()> {
-    let db = state.db()?;
+pub fn retry_intent(state: State<AppState>, workspace_id: String, id: String) -> Result<()> {
+    let db = state.workspace_db(&workspace_id)?;
     let p = db.profile()?.id;
     let changed=db.db.execute("UPDATE intents SET state='queued',next_attempt=0,error=NULL WHERE profile=?1 AND id=?2 AND state IN('failed','unknown') AND (first_attempt IS NULL OR first_attempt>?3)",params![p,id,chrono::Utc::now().timestamp()-23*3600]).map_err(|_|"Could not resume attempt.")?;
     if changed == 0 {
@@ -474,18 +528,25 @@ pub fn retry_intent(state: State<AppState>, id: String) -> Result<()> {
 #[tauri::command]
 pub fn set_local_flags(
     state: State<AppState>,
+    workspace_id: String,
     id: String,
     folder: Option<String>,
     is_read: Option<bool>,
     starred: Option<bool>,
     labels: Option<Vec<String>>,
 ) -> Result<()> {
-    state.db()?.flags(&id, folder, is_read, starred, labels)
+    state
+        .workspace_db(&workspace_id)?
+        .flags(&id, folder, is_read, starred, labels)
 }
 #[tauri::command]
-pub async fn make_intent_copy(state: State<'_, AppState>, id: String) -> Result<Draft> {
+pub async fn make_intent_copy(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    id: String,
+) -> Result<Draft> {
     let _job = state.jobs.lock().await;
-    let db = state.db()?;
+    let db = state.workspace_db(&workspace_id)?;
     let p = db.profile()?.id;
     let draft_id:String=db.db.query_row("SELECT draft_id FROM intents WHERE profile=?1 AND id=?2 AND state IN('failed','unknown','needs_review')",params![p,id],|r|r.get(0)).map_err(|_|"This send is no longer eligible to copy. Refresh Outbox first.")?;
     let mut draft = db
@@ -502,8 +563,8 @@ pub async fn make_intent_copy(state: State<'_, AppState>, id: String) -> Result<
     Ok(draft)
 }
 #[tauri::command]
-pub fn permanently_remove(state: State<AppState>, id: String) -> Result<()> {
-    state.db()?.remove_message(&id)
+pub fn permanently_remove(state: State<AppState>, workspace_id: String, id: String) -> Result<()> {
+    state.workspace_db(&workspace_id)?.remove_message(&id)
 }
 
 pub fn safe_filename(name: &str) -> String {
@@ -549,8 +610,9 @@ pub fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 pub async fn attach_files(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
+    workspace_id: String,
 ) -> Result<Vec<Attachment>> {
-    let profile = state.db()?.profile()?.id;
+    let profile = state.workspace_db(&workspace_id)?.profile()?.id;
     let Some(files) = app
         .dialog()
         .file()
@@ -622,10 +684,11 @@ pub async fn attach_files(
 pub async fn save_attachment(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
+    workspace_id: String,
     message_id: String,
     attachment_id: String,
 ) -> Result<bool> {
-    let p = state.db()?.profile()?;
+    let p = state.workspace_db(&workspace_id)?.profile()?;
     let m = state.db()?.message(&p.id, &message_id)?;
     let a = m
         .attachments
@@ -717,6 +780,91 @@ mod tests {
         };
         let id=s.db().unwrap().enqueue(&d,&json!({"from":"me@example.com","to":["test@example.com"],"subject":"immutable","text":"body","html":"<p>body</p>"})).unwrap();
         (p, id)
+    }
+    #[tokio::test]
+    async fn switching_before_claim_keeps_old_outbox_paused() {
+        let s = state("http://127.0.0.1:1".into());
+        let (p, _) = queued(&s);
+        s.db().unwrap().new_workspace("B").unwrap();
+        // A closed port also proves no request is attempted for the inactive workspace.
+        submit_next(&s, &p, "original-key").await.unwrap();
+        let db = s.db().unwrap();
+        assert_eq!(db.intents(&p.id).unwrap()[0].state, "queued");
+        assert!(db.intents(&db.profile().unwrap().id).unwrap().is_empty());
+        drop(db);
+        assert!(s.workspace_db(&p.id).is_err());
+    }
+    #[tokio::test]
+    async fn in_flight_acceptance_commits_only_to_original_workspace() {
+        use std::sync::Arc;
+        let context: Arc<Mutex<Option<Arc<AppState>>>> = Arc::new(Mutex::new(None));
+        let switch_context = context.clone();
+        let (base, requests, thread) = crate::test_server::serve_with(
+            vec![Reply {
+                status: 200,
+                body: r#"{"id":"00000000-0000-4000-8000-000000000001"}"#,
+                headers: "",
+            }],
+            move || {
+                let slot = switch_context.lock().unwrap();
+                let state = slot.as_ref().unwrap();
+                let mut db = state.db().unwrap();
+                let p = db.profile().unwrap();
+                let draft = db.drafts(&p.id).unwrap().remove(0);
+                db.new_workspace("B").unwrap();
+                db.enqueue(&draft, &json!({"subject":"Keep B queued"}))
+                    .unwrap();
+            },
+        );
+        let s = Arc::new(state(base));
+        *context.lock().unwrap() = Some(s.clone());
+        let (p, _) = queued(&s);
+        submit_next(&s, &p, "workspace-a-key").await.unwrap();
+        thread.join().unwrap();
+        let db = s.db().unwrap();
+        let b = db.profile().unwrap().id;
+        assert_ne!(b, p.id);
+        assert!(db.intents(&p.id).unwrap().is_empty());
+        assert!(db.drafts(&p.id).unwrap().is_empty());
+        assert_eq!(db.intents(&b).unwrap()[0].state, "queued");
+        assert_eq!(db.drafts(&b).unwrap().len(), 1);
+        assert!(db.snapshot().unwrap().messages.is_empty());
+        assert!(db
+            .message(&p.id, "outgoing:00000000-0000-4000-8000-000000000001")
+            .is_ok());
+        assert!(requests.lock().unwrap()[0].contains("Bearer workspace-a-key"));
+    }
+    #[tokio::test]
+    async fn switching_stops_sync_before_the_next_request() {
+        use std::sync::Arc;
+        let context: Arc<Mutex<Option<Arc<AppState>>>> = Arc::new(Mutex::new(None));
+        let switch_context = context.clone();
+        let (base, requests, thread) = crate::test_server::serve_with(
+            vec![Reply {
+                status: 200,
+                body: r#"{"data":[],"has_more":false}"#,
+                headers: "",
+            }],
+            move || {
+                switch_context
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .db()
+                    .unwrap()
+                    .new_workspace("B")
+                    .unwrap();
+            },
+        );
+        let s = Arc::new(state(base));
+        *context.lock().unwrap() = Some(s.clone());
+        let p = s.db().unwrap().profile().unwrap();
+        assert!(sync_profile(&s, &p, "workspace-a-key").await.is_err());
+        thread.join().unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert!(s.db().unwrap().profile().unwrap().last_sync.is_none());
+        assert_eq!(s.db().unwrap().snapshot().unwrap().pending_bodies, 0);
     }
     #[tokio::test]
     async fn paginated_sync_replays_safely_and_discovers_new_arrivals() {

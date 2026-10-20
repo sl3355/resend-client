@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useMemo,
+  useImperativeHandle,
+  type Ref,
+} from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import {
@@ -16,13 +23,18 @@ import {
   Redo2,
   Quote,
 } from "lucide-react";
-import { command, desktop, confirmAction } from "./backend";
+import { workspaceCommand, desktop, confirmAction } from "./backend";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useDialogFocus } from "./useDialogFocus";
 import { formatBytes, sanitize } from "./mail";
 import type { Attachment, Draft, Identity } from "./types";
 
+export interface ComposerHandle {
+  flush: () => Promise<void>;
+}
 interface Props {
+  workspaceId: string;
+  ref?: Ref<ComposerHandle>;
   initial: Draft;
   identities: Identity[];
   onClose: () => void;
@@ -30,12 +42,24 @@ interface Props {
   notify: (message: string, error?: boolean) => void;
 }
 export default function Composer({
+  workspaceId,
+  ref,
   initial,
   identities,
   onClose,
   onSaved,
   notify,
 }: Props) {
+  const command = useMemo(() => workspaceCommand(workspaceId), [workspaceId]);
+  useImperativeHandle(ref, () => ({
+    flush: async () => {
+      if (busy)
+        throw new Error(
+          "Finish the current composer action before switching workspaces.",
+        );
+      await flush();
+    },
+  }));
   const [draft, setDraft] = useState<Draft>(initial);
   const current = useRef(draft);
   const committed = useRef(0);

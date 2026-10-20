@@ -51,10 +51,14 @@ fn checksum(data: &[u8]) -> String {
 }
 
 #[tauri::command]
-pub async fn export_profile(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<bool> {
+pub async fn export_profile(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<bool> {
     let _job = state.jobs.lock().await;
     let mut data = {
-        let db = state.db()?;
+        let db = state.workspace_db(&workspace_id)?;
         let p = db.profile()?;
         let mut stmt = db
             .db
@@ -105,7 +109,7 @@ pub async fn export_profile(app: tauri::AppHandle, state: State<'_, AppState>) -
             files: vec![],
         }
     };
-    let p = state.db()?.profile()?.id;
+    let p = workspace_id;
     let referenced: std::collections::HashSet<String> = data
         .messages
         .iter()
@@ -232,8 +236,13 @@ fn decode(bytes: &[u8]) -> Result<BackupData> {
     Ok(data)
 }
 #[tauri::command]
-pub async fn restore_profile(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<bool> {
+pub async fn restore_profile(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<bool> {
     let _job = state.jobs.lock().await;
+    state.db()?.require_active(&workspace_id)?;
     let Some(path) = app
         .dialog()
         .file()
@@ -255,10 +264,18 @@ pub async fn restore_profile(app: tauri::AppHandle, state: State<'_, AppState>) 
     }
     let bytes = std::fs::read(path).map_err(|_| "Cannot read backup.")?;
     let data = decode(&bytes)?;
-    restore_data(&state, data)?;
+    restore_data_for(&state, data, Some(&workspace_id))?;
     Ok(true)
 }
-fn restore_data(state: &AppState, mut data: BackupData) -> Result<()> {
+#[cfg(test)]
+fn restore_data(state: &AppState, data: BackupData) -> Result<()> {
+    restore_data_for(state, data, None)
+}
+fn restore_data_for(
+    state: &AppState,
+    mut data: BackupData,
+    expected_workspace: Option<&str>,
+) -> Result<()> {
     let profile = uuid();
     for m in &mut data.messages {
         m.html = clean_html(&m.html);
@@ -276,6 +293,9 @@ fn restore_data(state: &AppState, mut data: BackupData) -> Result<()> {
             atomic_write(&state.file_path(&profile, &f.id)?, &bytes)?;
         }
         let mut db = state.db()?;
+        if let Some(expected) = expected_workspace {
+            db.require_active(expected)?;
+        }
         let tx = db.db.transaction().map_err(|_| "Cannot begin restore.")?;
         tx.execute(
             "INSERT INTO profiles(id,identities,settings) VALUES(?1,?2,?3)",

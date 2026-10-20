@@ -177,6 +177,7 @@ export function demoData(): Snapshot {
   return {
     profile: {
       id: "demo",
+      name: "Demo workspace",
       connected: true,
       identities: [
         {

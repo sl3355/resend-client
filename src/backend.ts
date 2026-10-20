@@ -15,7 +15,21 @@ let demo: Snapshot = (() => {
     return demoData();
   }
 })();
-const save = () => localStorage.setItem(storageKey, JSON.stringify(demo));
+demo.profile.name ||= "Demo workspace";
+const workspacesKey = "resend-client-demo-workspaces-v1";
+const demos: Record<string, Snapshot> = (() => {
+  try {
+    return JSON.parse(localStorage.getItem(workspacesKey) || "{}");
+  } catch {
+    return {};
+  }
+})();
+demos[demo.profile.id] = demo;
+const save = () => {
+  demos[demo.profile.id] = demo;
+  localStorage.setItem(storageKey, JSON.stringify(demo));
+  localStorage.setItem(workspacesKey, JSON.stringify(demos));
+};
 type Args = Record<string, unknown>;
 export async function command<T>(name: string, args: Args = {}): Promise<T> {
   if (desktop) return invoke<T>(name, args);
@@ -23,8 +37,71 @@ export async function command<T>(name: string, args: Args = {}): Promise<T> {
   save();
   return structuredClone(result) as T;
 }
+// Capture the workspace when creating a callback, including delayed autosaves.
+export function workspaceCommand(workspaceId: string | undefined) {
+  return <T>(name: string, args: Args = {}) => {
+    if (!workspaceId)
+      return Promise.reject<T>(new Error("Workspace is still loading."));
+    return command<T>(name, { ...args, workspaceId });
+  };
+}
 async function preview(name: string, a: Args): Promise<unknown> {
+  if (a.workspaceId && a.workspaceId !== demo.profile.id) {
+    throw new Error(
+      "The active workspace changed. Return to the original workspace and try again.",
+    );
+  }
   switch (name) {
+    case "list_workspaces":
+      return Object.values(demos).map((s) => ({
+        id: s.profile.id,
+        name: s.profile.name || "My workspace",
+        connected: s.profile.connected,
+        pending_sends: s.outbox.length,
+      }));
+    case "create_workspace": {
+      const name = String(a.name || "").trim();
+      if (!name || [...name].length > 60 || /[\u0000-\u001f\u007f]/.test(name))
+        throw new Error(
+          "Use a workspace name of 1–60 characters without control characters.",
+        );
+      demos[demo.profile.id] = demo;
+      demo = {
+        profile: {
+          id: crypto.randomUUID(),
+          name,
+          connected: false,
+          identities: [],
+          settings: {},
+          last_sync: null,
+        },
+        messages: [],
+        drafts: [],
+        outbox: [],
+        pending_bodies: 0,
+        history_complete: false,
+        sync_error: null,
+        inbox_unread: 0,
+        labels: [],
+      };
+      return demo.profile.id;
+    }
+    case "switch_workspace": {
+      const next = demos[String(a.id)];
+      if (!next) throw new Error("Workspace no longer exists.");
+      demos[demo.profile.id] = demo;
+      demo = next;
+      return null;
+    }
+    case "rename_workspace": {
+      const name = String(a.name || "").trim();
+      if (!name || [...name].length > 60 || /[\u0000-\u001f\u007f]/.test(name))
+        throw new Error(
+          "Use a workspace name of 1–60 characters without control characters.",
+        );
+      demo.profile.name = name;
+      return null;
+    }
     case "get_snapshot":
       demo.inbox_unread = demo.messages.filter(
         (m) => m.folder === "inbox" && !m.is_read,

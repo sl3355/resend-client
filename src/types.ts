@@ -61,6 +61,7 @@ export interface Intent {
 }
 export interface Profile {
   id: string;
+  name: string;
   connected: boolean;
   identities: Identity[];
   settings: { theme?: string };
@@ -91,4 +92,11 @@ export interface Probe {
   outgoing: boolean;
   incoming_error: string | null;
   outgoing_error: string | null;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  connected: boolean;
+  pending_sends: number;
 }

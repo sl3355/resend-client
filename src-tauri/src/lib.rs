@@ -24,6 +24,11 @@ impl AppState {
             .lock()
             .map_err(|_| "Local storage is temporarily unavailable. Restart the app.".into())
     }
+    pub fn workspace_db(&self, id: &str) -> Result<std::sync::MutexGuard<'_, Store>> {
+        let db = self.db()?;
+        db.require_active(id)?;
+        Ok(db)
+    }
     pub fn secret(&self, profile: &str) -> Result<String> {
         keyring::Entry::new("com.resendclient.desktop", profile)
             .and_then(|e| e.get_password())
@@ -81,6 +86,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
+            commands::list_workspaces,
+            commands::create_workspace,
+            commands::switch_workspace,
+            commands::rename_workspace,
             commands::confirm_action,
             commands::list_messages,
             commands::read_message,

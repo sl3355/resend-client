@@ -9,6 +9,13 @@ pub struct Store {
 fn err(e: impl std::fmt::Display) -> String {
     format!("Local storage error: {e}")
 }
+fn workspace_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 60 || name.chars().any(char::is_control) {
+        return Err("Use a workspace name of 1–60 characters without control characters.".into());
+    }
+    Ok(name)
+}
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let db = Connection::open(path).map_err(err)?;
@@ -20,8 +27,12 @@ impl Store {
         if version == 0 {
             db.execute_batch(include_str!("../migrations/001.sql"))
                 .map_err(err)?;
-        } else if version != 1 {
+        } else if version != 1 && version != 2 {
             return Err("This profile uses a newer schema. Open it with a compatible version of Resend Client.".into());
+        }
+        if version < 2 {
+            db.execute_batch(include_str!("../migrations/002.sql"))
+                .map_err(err)?;
         }
         db.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
@@ -41,25 +52,33 @@ impl Store {
         Ok(s)
     }
     pub fn new_profile(&mut self) -> Result<String> {
+        self.new_workspace("My workspace")
+    }
+    pub fn new_workspace(&mut self, name: &str) -> Result<String> {
+        let name = workspace_name(name)?;
         let id = uuid();
         let tx = self.db.transaction().map_err(err)?;
         tx.execute("UPDATE profiles SET active=0", [])
             .map_err(err)?;
-        tx.execute("INSERT INTO profiles(id,active) VALUES(?1,1)", [&id])
-            .map_err(err)?;
+        tx.execute(
+            "INSERT INTO profiles(id,active,name) VALUES(?1,1,?2)",
+            params![id, name],
+        )
+        .map_err(err)?;
         tx.commit().map_err(err)?;
         Ok(id)
     }
     pub fn profile(&self) -> Result<Profile> {
         self.db
             .query_row(
-                "SELECT id,connected,identities,settings,last_sync FROM profiles WHERE active=1",
+                "SELECT id,connected,identities,settings,last_sync,name FROM profiles WHERE active=1",
                 [],
                 |r| {
                     let identities: String = r.get(2)?;
                     let settings: String = r.get(3)?;
                     Ok(Profile {
                         id: r.get(0)?,
+                        name: r.get(5)?,
                         connected: r.get(1)?,
                         identities: serde_json::from_str(&identities).unwrap_or_default(),
                         settings: serde_json::from_str(&settings).unwrap_or(json!({})),
@@ -68,6 +87,54 @@ impl Store {
                 },
             )
             .map_err(err)
+    }
+    pub fn require_active(&self, id: &str) -> Result<()> {
+        if self.profile()?.id != id {
+            return Err(
+                "The active workspace changed. Return to the original workspace and try again."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+    pub fn workspaces(&self) -> Result<Vec<Workspace>> {
+        let mut stmt = self.db.prepare("SELECT id,name,connected,(SELECT COUNT(*) FROM intents WHERE profile=profiles.id AND state NOT IN('accepted','cancelled')) FROM profiles ORDER BY rowid").map_err(err)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Workspace {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    connected: r.get(2)?,
+                    pending_sends: r.get(3)?,
+                })
+            })
+            .map_err(err)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(err)
+    }
+    pub fn rename_workspace(&self, id: &str, name: &str) -> Result<()> {
+        let name = workspace_name(name)?;
+        self.db
+            .execute("UPDATE profiles SET name=?1 WHERE id=?2", params![name, id])
+            .map_err(err)?;
+        Ok(())
+    }
+    pub fn switch_workspace(&mut self, id: &str) -> Result<()> {
+        let tx = self.db.transaction().map_err(err)?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM profiles WHERE id=?1)",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        if !exists {
+            return Err("Workspace no longer exists.".into());
+        }
+        tx.execute("UPDATE profiles SET active=0", [])
+            .map_err(err)?;
+        tx.execute("UPDATE profiles SET active=1 WHERE id=?1", [id])
+            .map_err(err)?;
+        tx.commit().map_err(err)
     }
     pub fn update_profile(&self, identities: &[Identity], settings: &Value) -> Result<()> {
         if identities.len() > 100 {
@@ -551,6 +618,79 @@ mod tests {
     }
     fn mail() -> Message {
         provider_message(json!({"id":uuid(),"from":"friend@example.com","to":["me@example.com"],"subject":"你好 project","text":"orchid draft","created_at":now()}),"incoming",true).unwrap()
+    }
+    #[test]
+    fn workspace_switch_roundtrip_retains_data_and_checks_stale_writers() {
+        let mut s = store();
+        let a = s.profile().unwrap().id;
+        s.rename_workspace(&a, "Studio").unwrap();
+        let m = mail();
+        s.hydrate(&a, &m).unwrap();
+        let draft = Draft {
+            id: uuid(),
+            revision: 1,
+            subject: "Private draft".into(),
+            ..Default::default()
+        };
+        s.enqueue(&draft, &json!({"subject":"A send"})).unwrap();
+        let b = s.new_workspace("Personal").unwrap();
+        assert!(s.snapshot().unwrap().messages.is_empty());
+        assert!(s.drafts(&b).unwrap().is_empty());
+        assert!(s.intents(&b).unwrap().is_empty());
+        assert!(s.require_active(&a).is_err());
+        assert_eq!(s.workspaces().unwrap()[0].pending_sends, 1);
+        // Even identical draft IDs are isolated.
+        s.save_draft(&Draft {
+            subject: "B draft".into(),
+            ..draft.clone()
+        })
+        .unwrap();
+        s.switch_workspace(&a).unwrap();
+        assert_eq!(s.profile().unwrap().name, "Studio");
+        assert_eq!(s.snapshot().unwrap().messages.len(), 1);
+        assert_eq!(s.drafts(&a).unwrap()[0].subject, "Private draft");
+        assert_eq!(s.drafts(&b).unwrap()[0].subject, "B draft");
+        assert!(s.switch_workspace("missing").is_err());
+        assert!(s.new_workspace("  ").is_err());
+        assert_eq!(s.profile().unwrap().id, a);
+    }
+    #[test]
+    fn v1_migration_preserves_existing_profiles_and_last_active_after_restart() {
+        let path = std::env::temp_dir().join(format!("resend-migration-{}.sqlite", uuid()));
+        let a = uuid();
+        let b = uuid();
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(include_str!("../migrations/001.sql"))
+                .unwrap();
+            db.execute("INSERT INTO profiles(id,active,connected,identities) VALUES(?1,1,1,'[]'),(?2,0,0,'[]')",params![a,b]).unwrap();
+            db.execute("INSERT INTO sync_state(profile,direction,cursor) VALUES(?1,'incoming','old-cursor')",[&a]).unwrap();
+        }
+        {
+            let mut s = Store::open(&path).unwrap();
+            assert_eq!(s.workspaces().unwrap().len(), 2);
+            assert!(s.profile().unwrap().connected);
+            assert_eq!(s.profile().unwrap().id, a);
+            assert_eq!(s.cursor(&a, "incoming").unwrap(), Some("old-cursor".into()));
+            s.rename_workspace(&b, "Restored workspace").unwrap();
+            s.switch_workspace(&b).unwrap();
+            // The database enforces at most one active workspace.
+            assert!(s
+                .db
+                .execute("UPDATE profiles SET active=1 WHERE id=?1", [&a])
+                .is_err());
+        }
+        {
+            let s = Store::open(&path).unwrap();
+            assert_eq!(s.profile().unwrap().id, b);
+            assert_eq!(s.profile().unwrap().name, "Restored workspace");
+            assert_eq!(
+                s.db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                2
+            );
+        }
+        std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn replay_preserves_flags_and_tombstones() {
