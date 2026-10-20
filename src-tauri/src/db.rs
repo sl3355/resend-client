@@ -408,7 +408,10 @@ impl Store {
     pub fn save_draft(&self, d: &Draft) -> Result<()> {
         valid_id(&d.id)?;
         let p = self.profile()?.id;
-        if d.revision < 1 || d.text.len() + d.html.len() > 2_000_000 || d.attachments.len() > 100 {
+        if d.revision < 1
+            || d.text.len() + d.html.len() + d.quoted_text.len() + d.quoted_html.len() > 2_000_000
+            || d.attachments.len() > 100
+        {
             return Err("Draft exceeds supported limits.".into());
         }
         let locked:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM intents WHERE profile=?1 AND draft_id=?2 AND state!='cancelled')",params![p,d.id],|r|r.get(0)).map_err(err)?;

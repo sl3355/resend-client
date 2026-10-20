@@ -54,7 +54,7 @@ export function respond(
     d.subject = /^fwd?:/i.test(mail.subject)
       ? mail.subject
       : `Fwd: ${mail.subject}`;
-    d.text = `\n\n---------- Forwarded message ----------\nFrom: ${mail.from}\nDate: ${mail.created_at}\nSubject: ${mail.subject}\nTo: ${mail.to.join(", ")}\n\n${mail.text || htmlToText(mail.html)}`;
+    d.quoted_text = `\n\n---------- Forwarded message ----------\nFrom: ${mail.from}\nDate: ${mail.created_at}\nSubject: ${mail.subject}\nTo: ${mail.to.join(", ")}\n\n${mail.text || htmlToText(mail.html)}`;
   } else {
     const target = mail.reply_to.length ? mail.reply_to : [mail.from];
     const seen = new Set<string>();
@@ -78,14 +78,15 @@ export function respond(
         .join(" ")
         .slice(-8000);
     }
-    d.text = `\n\nOn ${new Date(mail.created_at).toLocaleString()}, ${mail.from} wrote:\n${(
+    d.quoted_text = `\n\nOn ${new Date(mail.created_at).toLocaleString()}, ${mail.from} wrote:\n${(
       mail.text || htmlToText(mail.html)
     )
       .split("\n")
       .map((l) => `> ${l}`)
       .join("\n")}`;
   }
-  d.html = `<p></p><blockquote>${escapeHtml(d.text.trim()).replaceAll("\n", "<br>")}</blockquote>`;
+  d.html = "<p></p>";
+  d.quoted_html = `<blockquote>${escapeHtml(d.quoted_text.trim()).replaceAll("\n", "<br>")}</blockquote>`;
   return d;
 }
 export const escapeHtml = (s: string) =>

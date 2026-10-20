@@ -45,6 +45,8 @@ export interface Draft {
   subject: string;
   text: string;
   html: string;
+  quoted_text?: string;
+  quoted_html?: string;
   attachments: Attachment[];
   headers: Record<string, string>;
   updated_at: string;

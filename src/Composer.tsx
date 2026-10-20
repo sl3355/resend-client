@@ -66,6 +66,7 @@ export default function Composer({
   const saveChain = useRef(Promise.resolve());
   const [saveStatus, setSaveStatus] = useState("Saving…");
   const [busy, setBusy] = useState(false);
+  const [editingQuote, setEditingQuote] = useState(false);
   const [showCc, setShowCc] = useState(!!draft.cc || !!draft.bcc);
   const [emptySubject, setEmptySubject] = useState(false);
   const [error, setError] = useState("");
@@ -88,6 +89,7 @@ export default function Composer({
       StarterKit.configure({ heading: { levels: [1, 2, 3] }, link: false }),
     ],
     content: sanitize(initial.html || "<p></p>"),
+    onFocus: () => setEditingQuote(false),
     editorProps: {
       transformPastedHTML: sanitize,
       attributes: {
@@ -99,6 +101,24 @@ export default function Composer({
     onUpdate: ({ editor }) =>
       update({ html: editor.getHTML(), text: editor.getText() }),
   });
+  const quoteEditor = useEditor({
+    extensions: [
+      StarterKit.configure({ heading: { levels: [1, 2, 3] }, link: false }),
+    ],
+    content: sanitize(initial.quoted_html || "<p></p>"),
+    onFocus: () => setEditingQuote(true),
+    editorProps: {
+      transformPastedHTML: sanitize,
+      attributes: {
+        "aria-label": "Quoted message",
+        role: "textbox",
+        "aria-multiline": "true",
+      },
+    },
+    onUpdate: ({ editor }) =>
+      update({ quoted_html: editor.getHTML(), quoted_text: editor.getText() }),
+  });
+  const formattingEditor = editingQuote ? quoteEditor : editor;
   function flush(): Promise<void> {
     const snapshot = structuredClone(current.current);
     const task = saveChain.current
@@ -162,7 +182,8 @@ export default function Composer({
   }, []);
   useEffect(() => {
     editor?.setEditable(!busy);
-  }, [busy, editor]);
+    quoteEditor?.setEditable(!busy);
+  }, [busy, editor, quoteEditor]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -330,18 +351,20 @@ export default function Composer({
         </div>
         <div className="format-toolbar" role="toolbar" aria-label="Formatting">
           <button
-            className={`icon-button ${editor?.isActive("bold") ? "active" : ""}`}
+            className={`icon-button ${formattingEditor?.isActive("bold") ? "active" : ""}`}
             aria-label="Bold"
-            aria-pressed={editor?.isActive("bold")}
-            onClick={() => editor?.chain().focus().toggleBold().run()}
+            aria-pressed={formattingEditor?.isActive("bold")}
+            onClick={() => formattingEditor?.chain().focus().toggleBold().run()}
           >
             <Bold size={16} />
           </button>
           <button
-            className={`icon-button ${editor?.isActive("italic") ? "active" : ""}`}
+            className={`icon-button ${formattingEditor?.isActive("italic") ? "active" : ""}`}
             aria-label="Italic"
-            aria-pressed={editor?.isActive("italic")}
-            onClick={() => editor?.chain().focus().toggleItalic().run()}
+            aria-pressed={formattingEditor?.isActive("italic")}
+            onClick={() =>
+              formattingEditor?.chain().focus().toggleItalic().run()
+            }
           >
             <Italic size={16} />
           </button>
@@ -349,21 +372,27 @@ export default function Composer({
           <button
             className="icon-button"
             aria-label="Bullet list"
-            onClick={() => editor?.chain().focus().toggleBulletList().run()}
+            onClick={() =>
+              formattingEditor?.chain().focus().toggleBulletList().run()
+            }
           >
             <List size={17} />
           </button>
           <button
             className="icon-button"
             aria-label="Numbered list"
-            onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+            onClick={() =>
+              formattingEditor?.chain().focus().toggleOrderedList().run()
+            }
           >
             <ListOrdered size={17} />
           </button>
           <button
             className="icon-button"
             aria-label="Quote"
-            onClick={() => editor?.chain().focus().toggleBlockquote().run()}
+            onClick={() =>
+              formattingEditor?.chain().focus().toggleBlockquote().run()
+            }
           >
             <Quote size={16} />
           </button>
@@ -371,14 +400,14 @@ export default function Composer({
           <button
             className="icon-button"
             aria-label="Undo typing"
-            onClick={() => editor?.chain().focus().undo().run()}
+            onClick={() => formattingEditor?.chain().focus().undo().run()}
           >
             <Undo2 size={16} />
           </button>
           <button
             className="icon-button"
             aria-label="Redo typing"
-            onClick={() => editor?.chain().focus().redo().run()}
+            onClick={() => formattingEditor?.chain().focus().redo().run()}
           >
             <Redo2 size={16} />
           </button>
@@ -391,6 +420,7 @@ export default function Composer({
               <p>{sender.signature}</p>
             </div>
           )}
+          {initial.quoted_html && <EditorContent editor={quoteEditor} />}
         </div>
         {draft.attachments.length > 0 && (
           <div className="compose-attachments">

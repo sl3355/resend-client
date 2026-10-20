@@ -113,9 +113,58 @@ test("reply uses the selected sender identity and quotes the source", async ({
     "Re: A few ideas for our next chapter",
   );
   await expect(
-    dialog.getByRole("textbox", { name: "Message body" }),
+    dialog.getByRole("textbox", { name: "Quoted message" }),
   ).toContainText("Amelia Hart");
+  const body = dialog.getByRole("textbox", { name: "Message body" });
+  await body.fill("Thanks for the ideas!");
+  const signature = dialog.locator(".signature-preview");
+  const quote = dialog.getByRole("textbox", { name: "Quoted message" });
+  expect(await body.evaluate((el) => el.textContent)).toBe(
+    "Thanks for the ideas!",
+  );
+  expect((await signature.boundingBox())!.y).toBeLessThan(
+    (await quote.boundingBox())!.y,
+  );
 });
+for (const action of ["Reply all", "Forward"]) {
+  test(`${action} keeps body, signature and editable quote in order after reopening`, async ({
+    page,
+  }) => {
+    await page.getByRole("button", { name: /Read A few ideas/ }).click();
+    await expect(
+      page.frameLocator("iframe").getByText("The new direction"),
+    ).toBeVisible();
+    const actionButton = page.getByRole("button", {
+      name: action,
+      exact: true,
+    });
+    await actionButton.focus();
+    await actionButton.press("Enter");
+    const dialog = page.getByRole("dialog");
+    await dialog
+      .getByRole("textbox", { name: "Message body" })
+      .fill("My response");
+    await dialog
+      .getByRole("textbox", { name: "Quoted message" })
+      .fill("Edited original");
+    await dialog
+      .getByRole("button", { name: "Save and close composer" })
+      .click();
+    await page.getByRole("button", { name: /^Drafts/ }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "A few ideas for our next chapter" })
+      .click();
+    await expect(
+      dialog.getByRole("textbox", { name: "Message body" }),
+    ).toHaveText("My response");
+    const quote = dialog.getByRole("textbox", { name: "Quoted message" });
+    await expect(quote).toHaveText("Edited original");
+    expect(
+      (await dialog.locator(".signature-preview").boundingBox())!.y,
+    ).toBeLessThan((await quote.boundingBox())!.y);
+  });
+}
 test("settings changes theme and keeps keyboard focus inside the dialog", async ({
   page,
 }) => {

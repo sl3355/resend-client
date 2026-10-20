@@ -36,6 +36,19 @@ describe("correspondence semantics", () => {
     expect(d.bcc).toBe("");
     expect(JSON.stringify(d)).not.toContain("hidden@example.com");
   });
+  it.each(["reply", "replyAll", "forward"] as const)(
+    "%s keeps the quote separate from the editable body",
+    (mode) => {
+      const s = demoData();
+      const draft = respond(s.messages[0], mode, s.profile.identities);
+      expect(draft.text).toBe("");
+      expect(draft.html).toBe("<p></p>");
+      expect(draft.quoted_text?.replace(/^> /gm, "")).toContain(
+        s.messages[0].text,
+      );
+      expect(draft.quoted_html).toMatch(/^<blockquote>/);
+    },
+  );
   it("preserves local-part case and normalizes only domains", () => {
     expect(addressKey("Name <Me@EXAMPLE.COM>")).toBe("Me@example.com");
     expect(addressKey("me@example.com")).not.toBe(addressKey("Me@example.com"));
@@ -54,7 +67,10 @@ describe("correspondence semantics", () => {
     ];
     const d = respond(m, "forward", s.profile.identities);
     expect(d.subject).toMatch(/^Fwd:/);
-    expect(d.text).toContain(m.text);
+    expect(d.quoted_text).toContain(m.text);
+    expect(d.text).toBe("");
+    expect(d.html).toBe("<p></p>");
+    expect(d.quoted_html).toContain("<blockquote>");
     expect(d.attachments).toEqual([]);
     expect(d.to).toBe("");
   });

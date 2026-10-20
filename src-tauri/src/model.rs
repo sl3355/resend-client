@@ -79,6 +79,8 @@ pub struct Draft {
     pub subject: String,
     pub text: String,
     pub html: String,
+    pub quoted_text: String,
+    pub quoted_html: String,
     pub attachments: Vec<Attachment>,
     pub headers: BTreeMap<String, String>,
     pub updated_at: String,
@@ -281,7 +283,7 @@ pub fn validate_draft(d: &Draft, identities: &[Identity]) -> Result<Value> {
     if to.is_empty() || to.len() + cc.len() + bcc.len() > 50 {
         return Err("Add a To recipient; at most 50 total recipients are supported.".into());
     }
-    if d.html.len() + d.text.len() > 2_000_000 {
+    if d.html.len() + d.text.len() + d.quoted_html.len() + d.quoted_text.len() > 2_000_000 {
         return Err("The message body is too large (2 MB maximum).".into());
     }
     let mut headers = BTreeMap::new();
@@ -308,11 +310,17 @@ pub fn validate_draft(d: &Draft, identities: &[Identity]) -> Result<Value> {
     } else {
         format!("\n\n{}", identity.signature)
     };
-    let text = format!("{}{}", d.text, signature);
+    let quoted_text = if d.quoted_text.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}", d.quoted_text.trim_start())
+    };
+    let text = format!("{}{}{}", d.text, signature, quoted_text);
     let html = format!(
-        "{}<p>{}</p>",
+        "{}<p>{}</p>{}",
         clean_html(&d.html),
-        escape_html(&signature).replace('\n', "<br>")
+        escape_html(&signature).replace('\n', "<br>"),
+        clean_html(&d.quoted_html)
     );
     Ok(
         json!({"from":from,"to":to,"cc":cc,"bcc":bcc,"subject":d.subject,"text":text,"html":html,"headers":headers}),
@@ -413,6 +421,40 @@ mod tests {
             assert!(!html.contains(bad), "{html}");
         }
         assert!(html.contains("世界"));
+    }
+    #[test]
+    fn signature_precedes_quoted_message_in_both_formats() {
+        let mut draft = Draft {
+            identity_id: "sender".into(),
+            to: "recipient@example.com".into(),
+            text: "My reply".into(),
+            html: "<p>My reply</p>".into(),
+            quoted_text: "Original message".into(),
+            quoted_html: "<blockquote>Original message</blockquote>".into(),
+            ..Default::default()
+        };
+        let mut identity = Identity {
+            id: "sender".into(),
+            email: "sender@example.com".into(),
+            signature: "Regards\nA & B".into(),
+            ..Default::default()
+        };
+        let payload = validate_draft(&draft, &[identity.clone()]).unwrap();
+        assert_eq!(
+            payload["text"],
+            "My reply\n\nRegards\nA & B\n\nOriginal message"
+        );
+        let html = payload["html"].as_str().unwrap();
+        assert!(html.find("My reply").unwrap() < html.find("Regards").unwrap());
+        assert!(html.find("A &amp; B").unwrap() < html.find("<blockquote>").unwrap());
+        identity.signature.clear();
+        let payload = validate_draft(&draft, &[identity.clone()]).unwrap();
+        assert_eq!(payload["text"], "My reply\n\nOriginal message");
+        draft.quoted_text.clear();
+        draft.quoted_html.clear();
+        identity.signature = "Signature".into();
+        let payload = validate_draft(&draft, &[identity]).unwrap();
+        assert_eq!(payload["text"], "My reply\n\nSignature");
     }
     #[test]
     fn recipients_and_injection() {
